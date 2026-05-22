@@ -34,6 +34,14 @@ jobs:
         working-directory: trustedagents
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./trustedagents/coverage.out
+          flags: unittests
+          name: trustedagents
+          fail_ci_if_error: false
+
       - name: Coverage summary
         working-directory: trustedagents
         run: go tool cover -func=coverage.out | tail -20

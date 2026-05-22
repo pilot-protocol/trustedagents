@@ -1,5 +1,9 @@
 # trustedagents
 
+[![ci](https://github.com/pilot-protocol/trustedagents/actions/workflows/ci.yml/badge.svg)](https://github.com/pilot-protocol/trustedagents/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pilot-protocol/trustedagents/branch/main/graph/badge.svg)](https://codecov.io/gh/pilot-protocol/trustedagents)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
 Trusted-agents plugin for the Pilot Protocol daemon. Ships an embedded
 allowlist of public node IDs that the daemon auto-accepts handshake
 requests from, plus a 1-hour refresher loop that pulls the canonical
@@ -44,3 +48,7 @@ daemons get the embedded copy compiled into the binary.
 | Tag | Effect |
 |---|---|
 | `no_trustedagents` | Compiles a stub that always returns `("", false)` from `IsTrusted`. Used by integration tests that need a clean trust state. |
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
