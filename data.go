@@ -87,6 +87,9 @@ func SetForTest(agents []Agent) (restore func()) {
 		if a.Hostname == "" {
 			continue
 		}
+		if other, exists := idx[a.NodeID]; exists {
+			panic(fmt.Sprintf("SetForTest: duplicate node_id %d (hostnames %q and %q)", a.NodeID, other, a.Hostname))
+		}
 		idx[a.NodeID] = a.Hostname
 	}
 	mu.Lock()
@@ -201,6 +204,9 @@ func Load(raw []byte) error {
 		}
 		if a.Hostname == "" {
 			continue // empty hostname: missing required field — drop
+		}
+		if other, exists := idx[a.NodeID]; exists {
+			return fmt.Errorf("duplicate node_id %d in trusted-agents list: %q and %q", a.NodeID, other, a.Hostname)
 		}
 		idx[a.NodeID] = a.Hostname
 	}
