@@ -81,6 +81,9 @@ func SetForTest(agents []Agent) (restore func()) {
 		if a.NodeID == 0 {
 			continue
 		}
+		if a.Hostname == "" {
+			continue
+		}
 		idx[a.NodeID] = a.Hostname
 	}
 	mu.Lock()
@@ -119,6 +122,9 @@ func Load(raw []byte) error {
 	for _, a := range doc.Agents {
 		if a.NodeID == 0 {
 			continue // 0 is reserved / would silently match unset fields
+		}
+		if a.Hostname == "" {
+			continue // empty hostname: missing required field — drop
 		}
 		idx[a.NodeID] = a.Hostname
 	}
