@@ -13,7 +13,7 @@ package trustedagents
 import (
 	"context"
 
-	"github.com/TeoSlayer/pilotprotocol/pkg/coreapi"
+	"github.com/pilot-protocol/common/coreapi"
 )
 
 // Service satisfies coreapi.Service and coreapi.TrustChecker with
