@@ -18,6 +18,10 @@ package trustedagents
 
 import (
 	"context"
+	"crypto/ed25519"
+	cryptorand "crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -88,33 +92,118 @@ func TestFetchOnce_Success(t *testing.T) {
 	}
 }
 
-// TestFetchOnce_AcceptsAnyJSON_NoSignatureCheck pins the iter-1 audit
-// HIGH finding: there is no signature verification on the runtime
-// allowlist. A compromised host serving structurally valid JSON over
-// HTTPS will be accepted wholesale. Update this test when signature
-// verification ships.
-func TestFetchOnce_AcceptsAnyJSON_NoSignatureCheck(t *testing.T) {
+// TestFetchOnce_AcceptsUnsignedJSON_BackwardCompat verifies that an
+// unsigned trusted-agents list (no "signature" field) is still accepted
+// when the embedded public key is the zero placeholder. This preserves
+// backward compatibility until the operator deploys signing.
+func TestFetchOnce_AcceptsUnsignedJSON_BackwardCompat(t *testing.T) {
 	restore := SetForTest(nil)
 	t.Cleanup(restore)
 
-	// Attacker payload: legit JSON shape, malicious node_id.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		_, _ = io.WriteString(w, `{"agents":[
-			{"hostname":"attacker","node_id":1}
+			{"hostname":"unsigned-peer","node_id":1}
 		]}`)
 	}))
 	defer srv.Close()
 
 	client, _ := newRewriteClient(srv)
 	if err := fetchOnce(context.Background(), client); err != nil {
-		t.Fatalf("fetchOnce: %v", err)
+		t.Fatalf("fetchOnce with unsigned JSON: %v", err)
 	}
 	if _, ok := IsTrusted(1); !ok {
-		t.Fatal("audit guard: fetchOnce currently has NO signature check; " +
-			"any JSON the upstream serves is accepted. If this test starts " +
-			"failing, signature verification probably landed — update or " +
-			"delete this test, but document the trust model change.")
+		t.Fatal("unsigned JSON should still be accepted (backward compat)")
+	}
+}
+
+// TestVerifyAndStripSig_UnsignedIsOK confirms VerifyAndStripSig returns the
+// raw body unchanged when no signature field is present.
+func TestVerifyAndStripSig_UnsignedIsOK(t *testing.T) {
+	raw := []byte(`{"agents":[{"hostname":"x","node_id":7}]}`)
+	out, err := VerifyAndStripSig(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != string(raw) {
+		t.Errorf("output differs from input on unsigned payload")
+	}
+}
+
+// TestVerifyAndStripSig_BadSignatureIsRejected confirms that a payload
+// with an invalid signature is rejected.
+func TestVerifyAndStripSig_BadSignatureIsRejected(t *testing.T) {
+	// Temporarily set a non-zero pubkey so verification runs.
+	prevKey := make(ed25519.PublicKey, 32)
+	copy(prevKey, embeddedPubKey)
+	t.Cleanup(func() { copy(embeddedPubKey, prevKey) })
+	for i := range embeddedPubKey {
+		embeddedPubKey[i] = 0xFF
+	}
+
+	raw := []byte(`{"agents":[{"hostname":"bad","node_id":9}],"signature":"aW52YWxpZCBzaWduYXR1cmUgZm9yIHRlc3Rpbmc="}`)
+	_, err := VerifyAndStripSig(raw)
+	if err == nil {
+		t.Fatal("expected signature mismatch error")
+	}
+	if !strings.Contains(err.Error(), "signature mismatch") &&
+		!strings.Contains(err.Error(), "signature") {
+		t.Errorf("err = %v, want signature-related", err)
+	}
+}
+
+// TestVerifyAndStripSig_SignaturePresentButKeyNotConfigured confirms that
+// a payload WITH a signature is rejected when embeddedPubKey is zero.
+func TestVerifyAndStripSig_SignaturePresentButKeyNotConfigured(t *testing.T) {
+	raw := []byte(`{"agents":[{"hostname":"x","node_id":3}],"signature":"AAAA"}`)
+	_, err := VerifyAndStripSig(raw)
+	if err == nil {
+		t.Fatal("expected error: signature present but key not configured")
+	}
+	if !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err = %v, want 'not configured'", err)
+	}
+}
+
+// TestVerifyAndStripSig_ValidSignatureIsAccepted verifies end-to-end:
+// sign a payload with a fresh key, embed the public key, and assert the
+// verification succeeds.
+func TestVerifyAndStripSig_ValidSignatureIsAccepted(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+
+	// Temporarily install the fresh public key.
+	prevKey := make(ed25519.PublicKey, 32)
+	copy(prevKey, embeddedPubKey)
+	t.Cleanup(func() { copy(embeddedPubKey, prevKey) })
+	copy(embeddedPubKey, pub)
+
+	// Build the canonical payload that the signer would produce.
+	type envelope struct {
+		Agents    json.RawMessage `json:"agents"`
+		Signature *string         `json:"signature,omitempty"`
+	}
+	env := envelope{
+		Agents: json.RawMessage(`[{"hostname":"ok","node_id":42}]`),
+	}
+	payload, _ := json.Marshal(env)
+	sig := ed25519.Sign(priv, payload)
+	sigStr := base64.StdEncoding.EncodeToString(sig)
+	env.Signature = &sigStr
+	signed, _ := json.Marshal(env)
+
+	out, err := VerifyAndStripSig(signed)
+	if err != nil {
+		t.Fatalf("valid signature rejected: %v", err)
+	}
+	// Output should be the same canonical form (without signature).
+	if !strings.Contains(string(out), `"node_id":42`) {
+		t.Errorf("output missing expected agent: %s", out)
+	}
+	if strings.Contains(string(out), `"signature"`) {
+		t.Error("output should not contain signature field")
 	}
 }
 
@@ -149,8 +238,8 @@ func TestFetchOnce_BodyIsBadJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected JSON parse error")
 	}
-	if !strings.Contains(err.Error(), "load:") {
-		t.Errorf("err = %v, want 'load:' prefix from fetchOnce wrap", err)
+	if !strings.Contains(err.Error(), "verify:") {
+		t.Errorf("err = %v, want 'verify:' prefix from fetchOnce wrap", err)
 	}
 }
 

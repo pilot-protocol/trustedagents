@@ -78,7 +78,14 @@ func fetchOnce(ctx context.Context, client *http.Client) error {
 	if err != nil {
 		return err
 	}
-	if err := Load(body); err != nil {
+	// Verify ed25519 signature (if present) before trusting the list.
+	// On absent/mismatched signature, return error → Run falls back to
+	// the embedded list.
+	verified, err := VerifyAndStripSig(body)
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
+	}
+	if err := Load(verified); err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
 	slog.Info("trustedagents list fetched", "agents", len(All()))

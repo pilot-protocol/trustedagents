@@ -17,8 +17,11 @@
 package trustedagents
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -103,6 +106,79 @@ func All() []Agent {
 	out := make([]Agent, len(all))
 	copy(out, all)
 	return out
+}
+
+// embeddedPubKey is the ed25519 public key used to verify the signature
+// on the runtime-fetched trusted-agents JSON. When all 32 bytes are zero
+// the key has not been configured yet and signature verification is
+// skipped (backward-compatible). Set this to the real public key once the
+// signing infrastructure is in place.
+//
+// TODO: inject via -ldflags at build time so the same binary can verify
+// different lists (dev/staging/prod).
+var embeddedPubKey = ed25519.PublicKey{
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+}
+
+// VerifyAndStripSig checks the ed25519 signature embedded in the fetched
+// JSON. If no "signature" field is present the raw body is returned as-is
+// (backward-compatible with unsigned lists). If the field is present the
+// signature is verified against embeddedPubKey; on mismatch an error is
+// returned so the caller falls back to the embedded list.
+func VerifyAndStripSig(raw []byte) ([]byte, error) {
+	// Decode the entire doc to extract the signature field.
+	var envelope struct {
+		Agents    json.RawMessage `json:"agents"`
+		Signature *string         `json:"signature,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("verify: parse: %w", err)
+	}
+
+	// No signature → accept unsigned (backward compat).
+	if envelope.Signature == nil || *envelope.Signature == "" {
+		slog.Warn("trustedagents: fetched list has no signature — " +
+			"accepting anyway (TLS-only trust). This will become a hard " +
+			"error once signing is deployed.")
+		return raw, nil
+	}
+
+	// Public key not configured → reject: a signature exists but we
+	// cannot verify it. Accepting would defeat the purpose.
+	if isZeroKey(embeddedPubKey) {
+		return nil, fmt.Errorf("verify: signature present but embeddedPubKey is not configured")
+	}
+
+	sigBytes, err := base64.StdEncoding.DecodeString(*envelope.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("verify: bad signature encoding: %w", err)
+	}
+
+	// Re-marshal WITHOUT the signature to produce the exact payload the
+	// signer committed to. The signer MUST use the same canonical form
+	// (json.Marshal on this struct with Agents as json.RawMessage).
+	envelope.Signature = nil
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("verify: remarshal: %w", err)
+	}
+
+	if !ed25519.Verify(embeddedPubKey, payload, sigBytes) {
+		return nil, fmt.Errorf("verify: signature mismatch")
+	}
+
+	slog.Info("trustedagents: signature verified", "agents", len(raw))
+	return payload, nil
+}
+
+func isZeroKey(k ed25519.PublicKey) bool {
+	for _, b := range k {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Load parses raw JSON and atomically replaces the active list. Safe to
