@@ -75,6 +75,43 @@ func TestMalformedRejected(t *testing.T) {
 	}
 }
 
+func TestEmptyHostnameSkipped(t *testing.T) {
+	t.Parallel()
+
+	// Entry with non-zero node_id but empty hostname must be dropped,
+	// so a missing hostname field can't produce an empty-string trust name.
+	restore := SetForTest([]Agent{
+		{Hostname: "", NodeID: 7},
+		{Hostname: "valid", NodeID: 9},
+	})
+	defer restore()
+
+	if _, ok := IsTrusted(7); ok {
+		t.Fatal("IsTrusted(7): empty-hostname entry must not match")
+	}
+	if _, ok := IsTrusted(9); !ok {
+		t.Fatal("IsTrusted(9): valid entry should still match")
+	}
+}
+
+func TestLoadEmptyHostnameSkipped(t *testing.T) {
+	// Not parallel: calls Load() which mutates shared global state.
+	if err := Load([]byte(`{"agents":[
+		{"hostname":"","node_id":7},
+		{"hostname":"valid","node_id":9}
+	]}`)); err != nil {
+		t.Fatalf("Load must succeed when skipping empty-hostname entries: %v", err)
+	}
+	if _, ok := IsTrusted(7); ok {
+		t.Fatal("empty-hostname entry must not become trusted after Load")
+	}
+	if _, ok := IsTrusted(9); !ok {
+		t.Fatal("valid entry must still be trusted after Load")
+	}
+	// Restore embedded list for downstream tests.
+	_ = Load(embeddedJSON)
+}
+
 func TestAllReturnsCopy(t *testing.T) {
 	t.Parallel()
 	restore := SetForTest([]Agent{{Hostname: "a", NodeID: 1}})
