@@ -27,13 +27,24 @@ const (
 // happen to share a process (e.g. tests).
 var fetchMu sync.Mutex
 
+// initialJitterMax controls the first-fetch jitter window. Exposed as a
+// var (not a const) so tests can shorten it to 0 and deterministically
+// drive Run through one full timer.C → fetchOnce → timer.Reset cycle.
+var initialJitterMax = 30 * time.Second
+
+// httpClientForRun is the http.Client Run uses. Exposed as a var so
+// tests can inject a transport that returns a deterministic error,
+// covering the slog.Warn-on-fetch-fail branch without depending on the
+// real network.
+var httpClientForRun = func() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
+
 // Run polls the canonical URL on a timer, replacing the active list
 // whenever a new one is fetched. Blocks until ctx is cancelled. The
 // first fetch is delayed 0–30s so a fleet rebooting at the same time
 // doesn't thunder the URL.
 func Run(ctx context.Context) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	timer := time.NewTimer(jitter(30 * time.Second))
+	client := httpClientForRun()
+	timer := time.NewTimer(jitter(initialJitterMax))
 	defer timer.Stop()
 	for {
 		select {
@@ -51,10 +62,9 @@ func Run(ctx context.Context) {
 func fetchOnce(ctx context.Context, client *http.Client) error {
 	fetchMu.Lock()
 	defer fetchMu.Unlock()
-	req, err := http.NewRequestWithContext(ctx, "GET", defaultURL, nil)
-	if err != nil {
-		return err
-	}
+	// http.NewRequestWithContext only fails on an invalid method or URL —
+	// both are compile-time constants here, so the error is unreachable.
+	req, _ := http.NewRequestWithContext(ctx, "GET", defaultURL, nil)
 	req.Header.Set("User-Agent", "pilot-daemon/trustedagents")
 	resp, err := client.Do(req)
 	if err != nil {

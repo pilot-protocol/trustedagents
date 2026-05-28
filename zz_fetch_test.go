@@ -310,6 +310,41 @@ func TestRun_FullIteration(t *testing.T) {
 	}
 }
 
+// TestRun_TimerFires drives Run through the timer.C → fetchOnce →
+// timer.Reset arm. We shrink initialJitterMax to 0 so the first timer
+// fires immediately, and inject a failing http client so fetchOnce
+// returns an error and the slog.Warn branch is also covered.
+func TestRun_TimerFires(t *testing.T) {
+	// Mutates package state — no t.Parallel.
+	prevJ := initialJitterMax
+	initialJitterMax = 0
+	t.Cleanup(func() { initialJitterMax = prevJ })
+
+	prevClient := httpClientForRun
+	httpClientForRun = func() *http.Client {
+		return &http.Client{Transport: &errTransport{err: errors.New("injected: no network")}}
+	}
+	t.Cleanup(func() { httpClientForRun = prevClient })
+
+	restore := SetForTest(nil)
+	t.Cleanup(restore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Run(ctx)
+		close(done)
+	}()
+	// Give Run enough time to fire the timer once + log + reset.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after timer-fired path + cancel")
+	}
+}
+
 // TestRun_FetchPath drives Run through the timer.C -> fetchOnce ->
 // timer.Reset arm. We can't shrink fetchInterval (const), so we can't
 // drive a second iteration in test time. But the first iteration —
