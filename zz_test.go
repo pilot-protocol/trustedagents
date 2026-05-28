@@ -112,6 +112,22 @@ func TestLoadEmptyHostnameSkipped(t *testing.T) {
 	_ = Load(embeddedJSON)
 }
 
+func TestLoadDuplicateNodeID(t *testing.T) {
+	t.Parallel()
+	err := Load([]byte(`{"agents":[
+		{"hostname":"a","node_id":1},
+		{"hostname":"b","node_id":1}
+	]}`))
+	if err == nil {
+		t.Fatal("Load with duplicate node_id must return an error")
+	}
+	// Also verify the list wasn't corrupted by the failed load.
+	if name, ok := IsTrusted(1); ok {
+		t.Fatalf("IsTrusted(1)=%q after failed Load — list must not be updated", name)
+	}
+	_ = Load(embeddedJSON) // restore
+}
+
 func TestAllReturnsCopy(t *testing.T) {
 	t.Parallel()
 	restore := SetForTest([]Agent{{Hostname: "a", NodeID: 1}})
