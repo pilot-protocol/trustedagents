@@ -1,0 +1,22 @@
+name: cascade
+
+on:
+  repository_dispatch:
+    types: [bump-upstream]
+  workflow_dispatch:
+    inputs:
+      upstream: { description: 'Upstream Go module', required: true, type: string }
+      version: { description: 'Upstream version', required: true, type: string }
+      is_prerelease: { description: 'true if beta/rc', required: false, type: boolean, default: false }
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    uses: pilot-protocol/release/.github/workflows/tag-bump.yml@main
+    with:
+      upstream: ${{ inputs.upstream || github.event.client_payload.upstream }}
+      version: ${{ inputs.version || github.event.client_payload.version }}
+      is_prerelease: ${{ inputs.is_prerelease == true || github.event.client_payload.is_prerelease == true }}
+      stable_only: true
