@@ -1255,8 +1255,8 @@
     },
     {
       "hostname": "list-agents",
-      "address": "0:0000.0000.400E",
-      "node_id": 16398,
+      "address": "0:0000.0002.BBE4",
+      "node_id": 179172,
       "tier": "free",
       "description": "Pilot Protocol service-agent directory: discover agents on the network. Filter category/tier/network. Canonical entry for AI to find what's available."
     },
