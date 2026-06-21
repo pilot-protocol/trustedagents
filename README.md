@@ -31,7 +31,7 @@ rt.Register(trustedagents.NewService())
 
 | File | What it does |
 |---|---|
-| `data.go` | Embedded JSON list. `Load`, `All`, `IsTrusted(nodeID) → (description, ok)`, `SetForTest`. |
+| `data.go` | Embedded JSON list. `Load`, `All`, `IsTrusted(nodeID) → (hostname, ok)`, `SetForTest`. |
 | `runtime.go` | `Run(ctx)` — periodic fetcher over HTTPS to `raw.githubusercontent.com`. |
 | `service.go` | `*Service` — `coreapi.Service` adapter (`Name/Order/Start/Stop` + `IsTrusted`). Build tag `!no_trustedagents`. |
 | `service_disabled.go` | Stub `*Service` when build tag `no_trustedagents` is set. |

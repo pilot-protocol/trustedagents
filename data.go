@@ -8,8 +8,10 @@
 //
 // The list is plain JSON in this directory, embedded at build time and
 // refreshed hourly from raw.githubusercontent.com by
-// plugins/trustedagents.Run. Authenticity comes from HTTPS to GitHub
-// plus repo write access — there is no separate signature check.
+// plugins/trustedagents.Run. Authenticity is handled in two tiers:
+// unsigned lists are accepted over TLS with a warning (backward-compatible);
+// signed lists require embeddedPubKey to be configured and undergo full
+// Ed25519 verification via VerifyAndStripSig before the payload is trusted.
 //
 // Adding an agent: edit trusted-agents.json, commit. Daemons in the
 // field pick it up within ~1h. Brand-new daemons get the embedded copy
@@ -120,8 +122,8 @@ func All() []Agent {
 // skipped (backward-compatible). Set this to the real public key once the
 // signing infrastructure is in place.
 //
-// TODO: inject via -ldflags at build time so the same binary can verify
-// different lists (dev/staging/prod).
+// To inject: go build -ldflags "-X github.com/pilot-protocol/trustedagents.embeddedPubKeyHex=<64-hex-chars>"
+// Generate keypair: scripts/gen-signing-key.sh
 var embeddedPubKey = ed25519.PublicKey{
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
