@@ -113,7 +113,10 @@ func TestLoadEmptyHostnameSkipped(t *testing.T) {
 }
 
 func TestLoadDuplicateNodeID(t *testing.T) {
-	t.Parallel()
+	// Not parallel: calls Load() which mutates shared global state and
+	// then asserts on it. Marking it parallel let a concurrent
+	// global-mutating test (e.g. a fuzz seed run) race the post-Load
+	// assertion. Matches the other Load() tests in this file.
 	err := Load([]byte(`{"agents":[
 		{"hostname":"a","node_id":1},
 		{"hostname":"b","node_id":1}
