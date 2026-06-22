@@ -67,3 +67,29 @@ func (s *Service) Stop(ctx context.Context) error {
 func (s *Service) IsTrusted(nodeID uint32) (string, bool) {
 	return IsTrusted(nodeID)
 }
+
+// IsTrustedWithKey is the pubkey-pinned trust gate (audit finding H4).
+// It enforces a per-entry Ed25519 pin when one is present and otherwise
+// falls back to node_id-only trust. Delegates to the package-global
+// allowlist.
+//
+// TODO(H4 wiring): the inbound auto-accept call site lives in
+// protocol/plugins/handshake (handshake.go ~L639), where it calls
+// hm.rt.IsTrusted(peerNodeID) via the coreapi.TrustChecker interface.
+// The authenticated peer key IS in scope there as msg.PublicKey (it is
+// already stored into the TrustRecord). To actually ENFORCE pinning,
+// two upstream changes are needed, in this order:
+//
+//  1. common/coreapi.TrustChecker: add
+//     IsTrustedWithKey(nodeID uint32, pubKey []byte) (string, bool).
+//  2. protocol/plugins/handshake: replace the auto-accept
+//     hm.rt.IsTrusted(peerNodeID) call with
+//     hm.rt.IsTrustedWithKey(peerNodeID, msg.PublicKey).
+//
+// Until those land, this method is callable directly but the daemon's
+// handshake path still routes through IsTrusted, so pins are stored and
+// validated on Load but not yet enforced at auto-accept. That is safe:
+// every shipped entry is unpinned, so behavior is unchanged.
+func (s *Service) IsTrustedWithKey(nodeID uint32, pubKey []byte) (string, bool) {
+	return IsTrustedWithKey(nodeID, pubKey)
+}
