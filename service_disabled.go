@@ -33,3 +33,7 @@ func (s *Service) Stop(_ context.Context) error                  { return nil }
 // IsTrusted always reports the node as untrusted when the plugin is
 // disabled. Callers should treat this as a fail-closed default.
 func (s *Service) IsTrusted(_ uint32) (string, bool) { return "", false }
+
+// IsTrustedWithKey mirrors IsTrusted's fail-closed behavior: with the
+// plugin disabled every peer is untrusted regardless of key.
+func (s *Service) IsTrustedWithKey(_ uint32, _ []byte) (string, bool) { return "", false }

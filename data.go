@@ -18,8 +18,9 @@ package trustedagents
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
+	"crypto/subtle"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -30,10 +31,20 @@ import (
 // Hostname and Address are kept for logs and `pilotctl trusted list`.
 // Other JSON fields in the source file (tier, description, ...) are
 // silently ignored on unmarshal — we don't care about them at runtime.
+//
+// PublicKey is OPTIONAL: a base64 (std encoding) Ed25519 public key
+// pinning the node_id to a specific key. When present, the inbound
+// auto-accept path MUST verify the authenticated peer's key equals it
+// (see IsTrustedWithKey). When absent — as for every entry shipped
+// today — trust falls back to node_id alone, preserving current
+// behavior. Pinning closes audit finding H4: without it, taking over a
+// trusted node_id (or a registry that maps a trusted node_id to an
+// attacker key) inherits full auto-approve trust.
 type Agent struct {
-	Hostname string `json:"hostname"`
-	Address  string `json:"address"`
-	NodeID   uint32 `json:"node_id"`
+	Hostname  string `json:"hostname"`
+	Address   string `json:"address"`
+	NodeID    uint32 `json:"node_id"`
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 //go:embed trusted-agents.json
@@ -48,11 +59,37 @@ func EmbeddedJSON() []byte {
 	return out
 }
 
+// entry is the in-memory form of a trusted agent: the display name plus
+// the optional decoded Ed25519 pin. pubKey is nil when the source entry
+// had no public_key (the unpinned, node_id-only case).
+type entry struct {
+	name   string
+	pubKey ed25519.PublicKey // nil == unpinned
+}
+
 var (
 	mu     sync.RWMutex
-	byNode map[uint32]string // node_id -> name
+	byNode map[uint32]entry // node_id -> entry
 	all    []Agent
 )
+
+// decodePin parses an Agent.PublicKey field into an ed25519.PublicKey.
+// Empty string → (nil, nil): unpinned, not an error. A non-empty value
+// that is not valid base64 or not 32 bytes is an error so a malformed
+// pin fails the whole Load rather than silently degrading to unpinned.
+func decodePin(b64 string) (ed25519.PublicKey, error) {
+	if b64 == "" {
+		return nil, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, fmt.Errorf("public_key: bad base64: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("public_key: want %d bytes, got %d", ed25519.PublicKeySize, len(raw))
+	}
+	return ed25519.PublicKey(raw), nil
+}
 
 func init() {
 	if err := Load(embeddedJSON); err != nil {
@@ -60,7 +97,7 @@ func init() {
 		// production, an empty list (zero auto-accepts) is the safe default.
 		slog.Error("trustedagents: embedded list malformed", "err", err)
 		mu.Lock()
-		byNode = map[uint32]string{}
+		byNode = map[uint32]entry{}
 		mu.Unlock()
 	}
 }
@@ -68,18 +105,63 @@ func init() {
 // IsTrusted reports whether nodeID is in the trusted-agents list. The
 // caller MUST verify the (node_id, public_key) binding at the registry
 // before acting on a true result — this package only checks the list.
+//
+// IsTrusted does NOT consult the optional per-entry pubkey pin: it
+// answers the node_id-only question for callers that have no
+// authenticated key in scope. Callers that DO have the authenticated
+// peer key (e.g. the inbound handshake auto-accept path) MUST prefer
+// IsTrustedWithKey so a present pin is enforced.
 func IsTrusted(nodeID uint32) (string, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	name, ok := byNode[nodeID]
-	return name, ok
+	e, ok := byNode[nodeID]
+	if !ok {
+		return "", false
+	}
+	return e.name, true
+}
+
+// IsTrustedWithKey reports whether nodeID is trusted given the
+// authenticated peer's Ed25519 public key.
+//
+//   - nodeID not in the list            → ("", false)
+//   - entry HAS a pinned PublicKey       → trusted ONLY if pubKey equals
+//     the pin (constant-time compare). A mismatch — or an empty/short
+//     pubKey when a pin is required — is ("", false).
+//   - entry has NO pin (every entry today) → trusted by node_id alone,
+//     preserving IsTrusted's behavior. The unpinned match is logged at
+//     debug so finding-H4 exposure is observable until pins are added.
+//
+// Pass the AUTHENTICATED key (the one the peer proved possession of in
+// the handshake), never an unverified claim — otherwise the pin adds
+// nothing.
+func IsTrustedWithKey(nodeID uint32, pubKey []byte) (string, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	e, ok := byNode[nodeID]
+	if !ok {
+		return "", false
+	}
+	if e.pubKey == nil {
+		// Unpinned: backward-compatible node_id-only trust.
+		slog.Debug("trustedagents: trusting unpinned entry by node_id only",
+			"node_id", nodeID, "agent", e.name)
+		return e.name, true
+	}
+	// Pinned: require an exact, constant-time key match.
+	if subtle.ConstantTimeCompare(e.pubKey, pubKey) != 1 {
+		slog.Warn("trustedagents: pubkey pin mismatch — refusing auto-accept",
+			"node_id", nodeID, "agent", e.name)
+		return "", false
+	}
+	return e.name, true
 }
 
 // SetForTest replaces the active list with agents and returns a restore
 // function that reloads the embedded list. Test-only — never call from
 // production code.
 func SetForTest(agents []Agent) (restore func()) {
-	idx := make(map[uint32]string, len(agents))
+	idx := make(map[uint32]entry, len(agents))
 	for _, a := range agents {
 		if a.NodeID == 0 {
 			continue
@@ -90,7 +172,11 @@ func SetForTest(agents []Agent) (restore func()) {
 		if other, exists := idx[a.NodeID]; exists {
 			panic(fmt.Sprintf("SetForTest: duplicate node_id %d (hostnames %q and %q)", a.NodeID, other, a.Hostname))
 		}
-		idx[a.NodeID] = a.Hostname
+		pin, err := decodePin(a.PublicKey)
+		if err != nil {
+			panic(fmt.Sprintf("SetForTest: node_id %d (%q): %v", a.NodeID, a.Hostname, err))
+		}
+		idx[a.NodeID] = entry{name: a.Hostname, pubKey: pin}
 	}
 	mu.Lock()
 	prevByNode, prevAll := byNode, all
@@ -197,7 +283,7 @@ func Load(raw []byte) error {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return err
 	}
-	idx := make(map[uint32]string, len(doc.Agents))
+	idx := make(map[uint32]entry, len(doc.Agents))
 	for _, a := range doc.Agents {
 		if a.NodeID == 0 {
 			continue // 0 is reserved / would silently match unset fields
@@ -206,9 +292,13 @@ func Load(raw []byte) error {
 			continue // empty hostname: missing required field — drop
 		}
 		if other, exists := idx[a.NodeID]; exists {
-			return fmt.Errorf("duplicate node_id %d in trusted-agents list: %q and %q", a.NodeID, other, a.Hostname)
+			return fmt.Errorf("duplicate node_id %d in trusted-agents list: %q and %q", a.NodeID, other.name, a.Hostname)
 		}
-		idx[a.NodeID] = a.Hostname
+		pin, err := decodePin(a.PublicKey)
+		if err != nil {
+			return fmt.Errorf("node_id %d (%q): %w", a.NodeID, a.Hostname, err)
+		}
+		idx[a.NodeID] = entry{name: a.Hostname, pubKey: pin}
 	}
 	mu.Lock()
 	byNode = idx
