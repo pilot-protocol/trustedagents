@@ -19,7 +19,8 @@ func TestEmbeddedListLoads(t *testing.T) {
 }
 
 func TestIsTrusted(t *testing.T) {
-	t.Parallel()
+	// Not parallel: SetForTest swaps the single global allowlist, so it
+	// must not run concurrently with other global-mutating tests.
 	restore := SetForTest([]Agent{
 		{Hostname: "list-agents", NodeID: 14161},
 		{Hostname: "search-agent", NodeID: 42},
@@ -38,7 +39,7 @@ func TestIsTrusted(t *testing.T) {
 }
 
 func TestZeroNodeIDIgnored(t *testing.T) {
-	t.Parallel()
+	// Not parallel: SetForTest swaps the single global allowlist.
 	// Defensive: an entry with node_id=0 in the JSON must be dropped, so
 	// a typo or missing field can't accidentally trust an unset peer.
 	restore := SetForTest([]Agent{
@@ -76,7 +77,7 @@ func TestMalformedRejected(t *testing.T) {
 }
 
 func TestEmptyHostnameSkipped(t *testing.T) {
-	t.Parallel()
+	// Not parallel: SetForTest swaps the single global allowlist.
 
 	// Entry with non-zero node_id but empty hostname must be dropped,
 	// so a missing hostname field can't produce an empty-string trust name.
@@ -132,7 +133,7 @@ func TestLoadDuplicateNodeID(t *testing.T) {
 }
 
 func TestAllReturnsCopy(t *testing.T) {
-	t.Parallel()
+	// Not parallel: SetForTest swaps the single global allowlist.
 	restore := SetForTest([]Agent{{Hostname: "a", NodeID: 1}})
 	defer restore()
 
