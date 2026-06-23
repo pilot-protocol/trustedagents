@@ -57,7 +57,7 @@ path requires upstream wiring — see the TODO on `Service.IsTrustedWithKey`.
 
 | File | What it does |
 |---|---|
-| `data.go` | Embedded JSON list. `Load`, `All`, `IsTrusted(nodeID) → (name, ok)`, `IsTrustedWithKey(nodeID, pubKey) → (name, ok)`, `SetForTest`. |
+| `data.go` | Embedded JSON list. `Load`, `All`, `IsTrusted(nodeID) → (hostname, ok)`, `IsTrustedWithKey(nodeID, pubKey) → (hostname, ok)`, `SetForTest`. |
 | `runtime.go` | `Run(ctx)` — periodic fetcher over HTTPS to `raw.githubusercontent.com`. |
 | `service.go` | `*Service` — `coreapi.Service` adapter (`Name/Order/Start/Stop` + `IsTrusted`). Build tag `!no_trustedagents`. |
 | `service_disabled.go` | Stub `*Service` when build tag `no_trustedagents` is set. |
