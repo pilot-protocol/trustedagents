@@ -1,0 +1,152 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege at the workflow level; jobs widen only where required
+# (CodeQL needs security-events: write to upload SARIF).
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Race-gated test as a hard security gate. Mirrors ci.yml's test step
+  # but stands on its own so the security workflow is self-contained and
+  # required even if ci.yml is refactored. -race catches the data races
+  # that the concurrent allowlist refresh (runtime.go) could introduce.
+  race-test:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: go test -race
+        env:
+          GOWORK: off
+        run: go test -race -parallel 4 ./...
+
+  # govulncheck — known-vulnerability scan over the call graph. Surfaces
+  # CVEs in both our deps and the standard library that our code actually
+  # reaches. Uses the toolchain pinned by setup-go; '1.25' resolves to the
+  # latest patched 1.25.x, which carries the stdlib fixes.
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        env:
+          GOWORK: off
+        run: govulncheck ./...
+
+  # gosec — static analysis for insecure Go patterns (unsafe, weak crypto,
+  # path traversal, etc.). Uploads SARIF so findings appear in the
+  # Security tab. No blanket disables; the curated -exclude list documents
+  # accepted findings inline (see flags below).
+  gosec:
+    name: gosec
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          # SARIF for the Security tab; fail the job on any finding.
+          # No rules are globally disabled — the package currently has
+          # zero gosec findings, so there is nothing to exclude.
+          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
+      - name: Upload gosec SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-results.sarif
+          category: gosec
+      - name: Fail on gosec findings
+        run: |
+          count=$(grep -c '"ruleId"' gosec-results.sarif || true)
+          if [ "${count:-0}" -gt 0 ]; then
+            echo "::error::gosec reported ${count} finding(s)"
+            exit 1
+          fi
+          echo "gosec: 0 findings"
+
+  # gitleaks — secret scanning over the working tree and git history.
+  # We run the gitleaks binary directly rather than gitleaks-action@v2,
+  # which now requires a paid GITLEAKS_LICENSE for organization repos.
+  # The binary scan is identical and license-free.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          VERSION=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Run gitleaks (git history)
+        run: gitleaks git . --no-banner --redact --exit-code 1
+
+  # CodeQL — semantic SAST for Go. Default + security-extended queries.
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          queries: security-extended
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+        env:
+          GOWORK: off
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:go'
+
+  # dependency-review — blocks PRs that introduce vulnerable or
+  # incompatibly-licensed dependencies. PR-only (needs a base to diff).
+  dependency-review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
