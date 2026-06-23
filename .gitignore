@@ -6,3 +6,9 @@ coverage.out
 *.bak
 *~
 *.tmp
+
+# Ed25519 signing private keys produced by scripts/gen-signing-key.sh —
+# must never be committed.
+signing-key.hex
+*.signing-key.hex
+*.key
