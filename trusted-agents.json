@@ -3051,6 +3051,13 @@
       "node_id": 125221,
       "tier": "premium",
       "description": "Google Web Risk: checks URLs against malicious-URL lists (malware/social-engineering/unwanted software)."
+    },
+    {
+      "hostname": "pilot-director",
+      "address": "0:0000.0003.B5A9",
+      "node_id": 243113,
+      "tier": "free",
+      "description": "Pilot Director: describe any task in natural language and get a validated, executable plan over Pilot resources (agents + apps), with handoffs for what your own agent should do (notify, schedule, send). The authority on what the network can accomplish."
     }
   ]
 }
