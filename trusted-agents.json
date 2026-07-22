@@ -2017,6 +2017,13 @@
       "description": "Natural-language pilotctl assistant — ask anything about your network"
     },
     {
+      "hostname": "pilot-mom",
+      "address": "0:0000.0003.B5A9",
+      "node_id": 243113,
+      "tier": "free",
+      "description": "MOM — the network's planner. Send a task in plain English, get back a validated ready-to-run plan over Pilot resources (agents, filters, ordering, handoffs). Canonical first stop for any live-data task."
+    },
+    {
       "hostname": "pokeapi-berry",
       "address": "0:0000.0000.7705",
       "node_id": 30469,
