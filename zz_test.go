@@ -118,16 +118,18 @@ func TestLoadDuplicateNodeID(t *testing.T) {
 	// then asserts on it. Marking it parallel let a concurrent
 	// global-mutating test (e.g. a fuzz seed run) race the post-Load
 	// assertion. Matches the other Load() tests in this file.
+	// A duplicate node_id is dropped (both entries), not fatal to the list:
+	// one bad row must not disable the whole feed.
 	err := Load([]byte(`{"agents":[
 		{"hostname":"a","node_id":1},
 		{"hostname":"b","node_id":1}
 	]}`))
-	if err == nil {
-		t.Fatal("Load with duplicate node_id must return an error")
+	if err != nil {
+		t.Fatalf("duplicate node_id must be dropped, not error the whole load: %v", err)
 	}
-	// Also verify the list wasn't corrupted by the failed load.
+	// The ambiguous node must NOT be trusted — neither entry wins.
 	if name, ok := IsTrusted(1); ok {
-		t.Fatalf("IsTrusted(1)=%q after failed Load — list must not be updated", name)
+		t.Fatalf("IsTrusted(1)=%q — a duplicated (ambiguous) node_id must stay untrusted", name)
 	}
 	_ = Load(embeddedJSON) // restore
 }

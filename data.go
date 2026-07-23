@@ -286,6 +286,7 @@ func Load(raw []byte) error {
 		return err
 	}
 	idx := make(map[uint32]entry, len(doc.Agents))
+	voided := make(map[uint32]bool) // node_ids seen more than once
 	for _, a := range doc.Agents {
 		if a.NodeID == 0 {
 			continue // 0 is reserved / would silently match unset fields
@@ -293,8 +294,20 @@ func Load(raw []byte) error {
 		if a.Hostname == "" {
 			continue // empty hostname: missing required field — drop
 		}
+		if voided[a.NodeID] {
+			continue // a duplicate already voided this node_id (below)
+		}
 		if other, exists := idx[a.NodeID]; exists {
-			return fmt.Errorf("duplicate node_id %d in trusted-agents list: %q and %q", a.NodeID, other.name, a.Hostname)
+			// Duplicate node_id: drop EVERY entry for it (the one already
+			// indexed and this one) rather than failing the whole list. An
+			// ambiguous node_id must not be trusted — neither the first
+			// entry nor a later pin may silently win — but a single bad row
+			// must not disable the entire feed.
+			slog.Warn("trustedagents: duplicate node_id — dropping all entries for it",
+				"node_id", a.NodeID, "hostnames", []string{other.name, a.Hostname})
+			delete(idx, a.NodeID)
+			voided[a.NodeID] = true
+			continue
 		}
 		pin, err := decodePin(a.PublicKey)
 		if err != nil {
