@@ -67,7 +67,7 @@ func FuzzLoad(f *testing.F) {
 		`{"agents":[{"hostname":"a","node_id":1}]}`,
 		`{"agents":[{"hostname":"a","node_id":0}]}`,                              // zero id dropped
 		`{"agents":[{"hostname":"","node_id":5}]}`,                               // empty host dropped
-		`{"agents":[{"hostname":"a","node_id":1},{"hostname":"b","node_id":1}]}`, // duplicate → error
+		`{"agents":[{"hostname":"a","node_id":1},{"hostname":"b","node_id":1}]}`, // duplicate → both dropped, node_id 1 untrusted
 		`{"agents":[{"hostname":"a","node_id":1,"public_key":"` + goodPin + `"}]}`,
 		`{"agents":[{"hostname":"a","node_id":1,"public_key":"!!!"}]}`,    // bad base64
 		`{"agents":[{"hostname":"a","node_id":1,"public_key":"AAAA"}]}`,   // short key
@@ -202,10 +202,11 @@ func TestLoad_OversizedDocDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestLoad_DuplicateWithPinsRejected confirms the duplicate-node_id
-// guard still fires when the colliding entries carry pins — the loader
-// must reject rather than letting the second pin silently win.
-func TestLoad_DuplicateWithPinsRejected(t *testing.T) {
+// TestLoad_DuplicateWithPinsDropped confirms the duplicate-node_id guard
+// still fires when the colliding entries carry pins: the loader drops every
+// entry for that node_id (neither the first entry nor a later pin may win)
+// while the rest of the list still loads.
+func TestLoad_DuplicateWithPinsDropped(t *testing.T) {
 	restore := SetForTest(nil)
 	t.Cleanup(restore)
 
@@ -216,15 +217,15 @@ func TestLoad_DuplicateWithPinsRejected(t *testing.T) {
 	doc := `{"agents":[` +
 		`{"hostname":"x","node_id":7,"public_key":"` + a + `"},` +
 		`{"hostname":"y","node_id":7,"public_key":"` + bk + `"}]}`
-	if err := Load([]byte(doc)); err == nil {
-		t.Fatal("duplicate node_id with pins must be rejected")
+	if err := Load([]byte(doc)); err != nil {
+		t.Fatalf("duplicate node_id must be dropped, not error the load: %v", err)
 	}
-	// The failed Load must not have trusted either pin.
+	// The dropped node must not have trusted either pin.
 	if _, ok := IsTrustedWithKey(7, pubA); ok {
-		t.Fatal("node_id 7 must not be trusted after a rejected duplicate Load")
+		t.Fatal("node_id 7 must not be trusted after a dropped duplicate Load")
 	}
 	if _, ok := IsTrustedWithKey(7, pubB); ok {
-		t.Fatal("node_id 7 must not be trusted after a rejected duplicate Load")
+		t.Fatal("node_id 7 must not be trusted after a dropped duplicate Load")
 	}
 }
 
