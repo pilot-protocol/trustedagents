@@ -6,8 +6,8 @@
 
 Trusted-agents plugin for the Pilot Protocol daemon. Ships an embedded
 allowlist of public node IDs that the daemon auto-accepts handshake
-requests from, plus a 1-hour refresher loop that pulls the canonical
-list from this repo on a schedule.
+requests from. Release builds may include an Ed25519 verifier that enables
+a 1-hour refresher loop; every remotely fetched list must be signed.
 
 ## Install
 
@@ -65,9 +65,10 @@ path requires upstream wiring — see the TODO on `Service.IsTrustedWithKey`.
 
 ## Updating the list
 
-Edit `trusted-agents.json` and open a PR. Once merged, daemons in the
-field pick up the new list on their next 1-hour refresh tick. Brand-new
-daemons get the embedded copy compiled into the binary.
+Edit `trusted-agents.json` and open a PR. Brand-new daemons get the reviewed
+copy compiled into the binary. Binaries built with `embeddedPubKeyHex` also
+pick up a validly signed remote list on their next 1-hour refresh tick.
+Binaries without that verifier never fetch or accept runtime trust changes.
 
 ## Build tags
 

@@ -9,10 +9,8 @@
 // raw.githubusercontent.com to a local httptest server. The transport
 // is the only seam available without refactoring source files.
 //
-// Iter-1 audit (HIGH) flagged: no signature verification on
-// runtime-fetched allowlist. TestFetchOnce_AcceptsAnyJSON_NoSignatureCheck
-// pins that behaviour so any future signature work breaks the test and
-// forces a deliberate update.
+// Runtime-fetched allowlists are fail closed: a verifier key must be
+// configured and every response must carry a valid signature.
 
 package trustedagents
 
@@ -61,12 +59,48 @@ func newRewriteClient(srv *httptest.Server) (*http.Client, *rewriteTransport) {
 	return &http.Client{Transport: rt, Timeout: 5 * time.Second}, rt
 }
 
+func setVerifierForTest(t *testing.T, key ed25519.PublicKey) {
+	t.Helper()
+	previous := append(ed25519.PublicKey(nil), embeddedPubKey...)
+	t.Cleanup(func() { copy(embeddedPubKey, previous) })
+	clear(embeddedPubKey)
+	copy(embeddedPubKey, key)
+}
+
+func signAgentListForTest(t *testing.T, priv ed25519.PrivateKey, agents json.RawMessage) []byte {
+	t.Helper()
+	type envelope struct {
+		Agents    json.RawMessage `json:"agents"`
+		Signature *string         `json:"signature,omitempty"`
+	}
+	env := envelope{Agents: agents}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
+	env.Signature = &sig
+	signed, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal signed payload: %v", err)
+	}
+	return signed
+}
+
 // TestFetchOnce_Success drives the full happy path: 200 + valid JSON
 // body. After the call Load() must have populated the global list.
 func TestFetchOnce_Success(t *testing.T) {
 	// Mutates package state via Load — no t.Parallel.
 	restore := SetForTest(nil)
 	t.Cleanup(restore)
+	pub, priv, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	setVerifierForTest(t, pub)
+	signed := signAgentListForTest(t, priv, json.RawMessage(`[
+		{"hostname":"injected","address":"0:0:1","node_id":4242}
+	]`))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// Confirm fetchOnce attached the documented UA.
@@ -74,9 +108,7 @@ func TestFetchOnce_Success(t *testing.T) {
 			t.Errorf("User-Agent = %q, want pilot-daemon/trustedagents", got)
 		}
 		w.WriteHeader(200)
-		_, _ = io.WriteString(w, `{"agents":[
-			{"hostname":"injected","address":"0:0:1","node_id":4242}
-		]}`)
+		_, _ = w.Write(signed)
 	}))
 	defer srv.Close()
 
@@ -92,13 +124,16 @@ func TestFetchOnce_Success(t *testing.T) {
 	}
 }
 
-// TestFetchOnce_AcceptsUnsignedJSON_BackwardCompat verifies that an
-// unsigned trusted-agents list (no "signature" field) is still accepted
-// when the embedded public key is the zero placeholder. This preserves
-// backward compatibility until the operator deploys signing.
-func TestFetchOnce_AcceptsUnsignedJSON_BackwardCompat(t *testing.T) {
+// TestFetchOnce_RejectsUnsignedJSON verifies an unsigned runtime response
+// cannot replace the active reviewed list.
+func TestFetchOnce_RejectsUnsignedJSON(t *testing.T) {
 	restore := SetForTest(nil)
 	t.Cleanup(restore)
+	pub, _, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	setVerifierForTest(t, pub)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
@@ -109,24 +144,21 @@ func TestFetchOnce_AcceptsUnsignedJSON_BackwardCompat(t *testing.T) {
 	defer srv.Close()
 
 	client, _ := newRewriteClient(srv)
-	if err := fetchOnce(context.Background(), client); err != nil {
-		t.Fatalf("fetchOnce with unsigned JSON: %v", err)
+	err = fetchOnce(context.Background(), client)
+	if err == nil || !strings.Contains(err.Error(), "signature is required") {
+		t.Fatalf("fetchOnce unsigned error = %v, want signature-required error", err)
 	}
-	if _, ok := IsTrusted(1); !ok {
-		t.Fatal("unsigned JSON should still be accepted (backward compat)")
+	if _, ok := IsTrusted(1); ok {
+		t.Fatal("unsigned JSON changed the active trust list")
 	}
 }
 
-// TestVerifyAndStripSig_UnsignedIsOK confirms VerifyAndStripSig returns the
-// raw body unchanged when no signature field is present.
-func TestVerifyAndStripSig_UnsignedIsOK(t *testing.T) {
+// TestVerifyAndStripSig_UnsignedIsRejected confirms a signature is mandatory.
+func TestVerifyAndStripSig_UnsignedIsRejected(t *testing.T) {
 	raw := []byte(`{"agents":[{"hostname":"x","node_id":7}]}`)
-	out, err := VerifyAndStripSig(raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(out) != string(raw) {
-		t.Errorf("output differs from input on unsigned payload")
+	_, err := VerifyAndStripSig(raw)
+	if err == nil || !strings.Contains(err.Error(), "signature is required") {
+		t.Fatalf("error = %v, want signature-required error", err)
 	}
 }
 
@@ -155,6 +187,7 @@ func TestVerifyAndStripSig_BadSignatureIsRejected(t *testing.T) {
 // TestVerifyAndStripSig_SignaturePresentButKeyNotConfigured confirms that
 // a payload WITH a signature is rejected when embeddedPubKey is zero.
 func TestVerifyAndStripSig_SignaturePresentButKeyNotConfigured(t *testing.T) {
+	setVerifierForTest(t, make(ed25519.PublicKey, ed25519.PublicKeySize))
 	raw := []byte(`{"agents":[{"hostname":"x","node_id":3}],"signature":"AAAA"}`)
 	_, err := VerifyAndStripSig(raw)
 	if err == nil {
@@ -204,6 +237,35 @@ func TestVerifyAndStripSig_ValidSignatureIsAccepted(t *testing.T) {
 	}
 	if strings.Contains(string(out), `"signature"`) {
 		t.Error("output should not contain signature field")
+	}
+}
+
+func TestConfigureEmbeddedPubKey_FromLinkerString(t *testing.T) {
+	setVerifierForTest(t, make(ed25519.PublicKey, ed25519.PublicKeySize))
+	previousHex := embeddedPubKeyHex
+	embeddedPubKeyHex = strings.Repeat("ab", ed25519.PublicKeySize)
+	t.Cleanup(func() { embeddedPubKeyHex = previousHex })
+
+	configureEmbeddedPubKey()
+	if isZeroKey(embeddedPubKey) {
+		t.Fatal("configured verifier remained zero")
+	}
+	for i, value := range embeddedPubKey {
+		if value != 0xab {
+			t.Fatalf("configured verifier byte %d = %x, want ab", i, value)
+		}
+	}
+}
+
+func TestConfigureEmbeddedPubKey_InvalidValueFailsClosed(t *testing.T) {
+	setVerifierForTest(t, make(ed25519.PublicKey, ed25519.PublicKeySize))
+	previousHex := embeddedPubKeyHex
+	embeddedPubKeyHex = "not-a-valid-ed25519-key"
+	t.Cleanup(func() { embeddedPubKeyHex = previousHex })
+
+	configureEmbeddedPubKey()
+	if !isZeroKey(embeddedPubKey) {
+		t.Fatal("invalid verifier configured a non-zero key")
 	}
 }
 
@@ -414,6 +476,7 @@ func TestRun_TimerFires(t *testing.T) {
 		return &http.Client{Transport: &errTransport{err: errors.New("injected: no network")}}
 	}
 	t.Cleanup(func() { httpClientForRun = prevClient })
+	setVerifierForTest(t, ed25519.PublicKey(strings.Repeat("x", ed25519.PublicKeySize)))
 
 	restore := SetForTest(nil)
 	t.Cleanup(restore)
@@ -431,6 +494,36 @@ func TestRun_TimerFires(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after timer-fired path + cancel")
+	}
+}
+
+// TestRun_WithoutVerifierNeverFetches proves an unconfigured release stays on
+// its reviewed embedded list and does not make a runtime trust request.
+func TestRun_WithoutVerifierNeverFetches(t *testing.T) {
+	setVerifierForTest(t, make(ed25519.PublicKey, ed25519.PublicKeySize))
+	var clients atomic.Int32
+	previous := httpClientForRun
+	httpClientForRun = func() *http.Client {
+		clients.Add(1)
+		return &http.Client{Transport: &errTransport{err: errors.New("must not fetch")}}
+	}
+	t.Cleanup(func() { httpClientForRun = previous })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Run(ctx)
+		close(done)
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+	if got := clients.Load(); got != 0 {
+		t.Fatalf("http clients created = %d, want 0", got)
 	}
 }
 
