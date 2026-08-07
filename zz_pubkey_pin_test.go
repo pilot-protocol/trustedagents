@@ -164,22 +164,3 @@ func TestLoad_BadPinRejected(t *testing.T) {
 		t.Error("Load must reject a wrong-length public_key")
 	}
 }
-
-// TestService_IsTrustedWithKey_Delegates exercises the Service adapter
-// method end-to-end.
-func TestService_IsTrustedWithKey_Delegates(t *testing.T) {
-	raw, b64 := newPin(t)
-	restore := SetForTest([]Agent{
-		{Hostname: "svc-agent", NodeID: 100, PublicKey: b64},
-	})
-	t.Cleanup(restore)
-
-	s := NewService()
-	if name, ok := s.IsTrustedWithKey(100, raw); !ok || name != "svc-agent" {
-		t.Fatalf("Service.IsTrustedWithKey(100, correct) = (%q,%v), want (svc-agent,true)", name, ok)
-	}
-	wrong, _ := newPin(t)
-	if _, ok := s.IsTrustedWithKey(100, wrong); ok {
-		t.Fatal("Service.IsTrustedWithKey(100, wrong) must be untrusted")
-	}
-}

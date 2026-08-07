@@ -6,16 +6,15 @@
 // and the CLI (cmd/pilotctl) can read it without violating the strict
 // downward layer rule.
 //
-// The list is plain JSON in this directory, embedded at build time and
-// refreshed hourly from raw.githubusercontent.com by
-// plugins/trustedagents.Run. Authenticity is handled in two tiers:
-// unsigned lists are accepted over TLS with a warning (backward-compatible);
-// signed lists require embeddedPubKey to be configured and undergo full
-// Ed25519 verification via VerifyAndStripSig before the payload is trusted.
+// The list is plain JSON in this directory and embedded at build time.
+// Runtime refresh is enabled only when the binary contains an Ed25519
+// verifier key. Every fetched list must carry a valid signature; otherwise
+// the reviewed build-embedded list remains active.
 //
-// Adding an agent: edit trusted-agents.json, commit. Daemons in the
-// field pick it up within ~1h. Brand-new daemons get the embedded copy
-// from the binary, so the feature works on first boot even airgapped.
+// Adding an agent: edit trusted-agents.json, review, and commit. Brand-new
+// daemons get that embedded copy from the binary, so the feature works on
+// first boot even airgapped. Runtime updates require a signed list and a
+// verifier key compiled into the binary.
 package trustedagents
 
 import (
@@ -23,6 +22,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -94,6 +94,7 @@ func decodePin(b64 string) (ed25519.PublicKey, error) {
 }
 
 func init() {
+	configureEmbeddedPubKey()
 	if err := Load(embeddedJSON); err != nil {
 		// CI guards this via TestEmbeddedListLoads; if it ever fires in
 		// production, an empty list (zero auto-accepts) is the safe default.
@@ -202,11 +203,9 @@ func All() []Agent {
 	return out
 }
 
-// embeddedPubKey is the ed25519 public key used to verify the signature
-// on the runtime-fetched trusted-agents JSON. When all 32 bytes are zero
-// the key has not been configured yet and signature verification is
-// skipped (backward-compatible). Set this to the real public key once the
-// signing infrastructure is in place.
+// embeddedPubKey is the Ed25519 public key used to verify the signature on
+// runtime-fetched trusted-agents JSON. When all 32 bytes are zero, runtime
+// refresh is disabled and the reviewed build-embedded list remains active.
 //
 // To inject: go build -ldflags "-X github.com/pilot-protocol/trustedagents.embeddedPubKeyHex=<64-hex-chars>"
 // Generate keypair: scripts/gen-signing-key.sh
@@ -215,11 +214,27 @@ var embeddedPubKey = ed25519.PublicKey{
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 }
 
+// embeddedPubKeyHex is intentionally a string so release builds can inject a
+// verifier with -ldflags -X. An invalid value leaves embeddedPubKey at zero,
+// which safely disables runtime refresh.
+var embeddedPubKeyHex string
+
+func configureEmbeddedPubKey() {
+	if embeddedPubKeyHex == "" {
+		return
+	}
+	raw, err := hex.DecodeString(embeddedPubKeyHex)
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		slog.Error("trustedagents: invalid embedded verifier key; runtime refresh disabled",
+			"bytes", len(raw), "err", err)
+		return
+	}
+	copy(embeddedPubKey, raw)
+}
+
 // VerifyAndStripSig checks the ed25519 signature embedded in the fetched
-// JSON. If no "signature" field is present the raw body is returned as-is
-// (backward-compatible with unsigned lists). If the field is present the
-// signature is verified against embeddedPubKey; on mismatch an error is
-// returned so the caller falls back to the embedded list.
+// JSON. Both a configured verifier and a non-empty signature are required.
+// Any failure leaves the caller's reviewed build-embedded list untouched.
 func VerifyAndStripSig(raw []byte) ([]byte, error) {
 	// Decode the entire doc to extract the signature field.
 	var envelope struct {
@@ -230,12 +245,10 @@ func VerifyAndStripSig(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("verify: parse: %w", err)
 	}
 
-	// No signature → accept unsigned (backward compat).
+	// Runtime trust updates must be authenticated. HTTPS still protects the
+	// transport, but it is not authorization to change an auto-trust list.
 	if envelope.Signature == nil || *envelope.Signature == "" {
-		slog.Warn("trustedagents: fetched list has no signature — " +
-			"accepting anyway (TLS-only trust). This will become a hard " +
-			"error once signing is deployed.")
-		return raw, nil
+		return nil, fmt.Errorf("verify: signature is required")
 	}
 
 	// Public key not configured → reject: a signature exists but we

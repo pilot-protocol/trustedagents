@@ -38,11 +38,17 @@ var initialJitterMax = 30 * time.Second
 // real network.
 var httpClientForRun = func() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
 
-// Run polls the canonical URL on a timer, replacing the active list
-// whenever a new one is fetched. Blocks until ctx is cancelled. The
-// first fetch is delayed 0–30s so a fleet rebooting at the same time
-// doesn't thunder the URL.
+// Run polls the canonical URL on a timer, replacing the active list only
+// after signature verification. A binary without a verifier key keeps its
+// reviewed build-embedded list and performs no network refresh. Blocks until
+// ctx is cancelled. The first fetch is delayed 0–30s so a fleet rebooting at
+// the same time doesn't thunder the URL.
 func Run(ctx context.Context) {
+	if isZeroKey(embeddedPubKey) {
+		slog.Info("trustedagents: runtime refresh disabled; using build-embedded list")
+		<-ctx.Done()
+		return
+	}
 	client := httpClientForRun()
 	timer := time.NewTimer(jitter(initialJitterMax))
 	defer timer.Stop()
@@ -78,9 +84,8 @@ func fetchOnce(ctx context.Context, client *http.Client) error {
 	if err != nil {
 		return err
 	}
-	// Verify ed25519 signature (if present) before trusting the list.
-	// On absent/mismatched signature, return error → Run falls back to
-	// the embedded list.
+	// Require and verify the Ed25519 signature before trusting the list.
+	// On any verification failure, Run keeps the embedded list.
 	verified, err := VerifyAndStripSig(body)
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
